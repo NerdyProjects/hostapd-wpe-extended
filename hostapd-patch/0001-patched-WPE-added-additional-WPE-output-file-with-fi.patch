@@ -1,0 +1,476 @@
+From 77cc116fb666d00d93918bd8e553e6c62eddcdd3 Mon Sep 17 00:00:00 2001
+From: Matthias Larisch <mail@matthias-larisch.de>
+Date: Wed, 5 Feb 2014 00:14:51 +0100
+Subject: [PATCH 1/3] patched WPE, added additional WPE output file with
+ filtered data: stations MGMT ssis + identities sent over EAP + TLS indication
+ for certificate checks + GTC/PAP + MSChapV2 succeeded
+
+---
+ hostapd/main.c                       | 13 ++++++++++--
+ src/ap/drv_callbacks.c               | 16 ++++++++++++++-
+ src/common/ieee802_11_common.c       | 17 ++++++++++++++++
+ src/common/ieee802_11_common.h       |  1 +
+ src/crypto/ms_funcs.c                |  2 +-
+ src/crypto/ms_funcs.h                |  4 ++++
+ src/crypto/tls_openssl.c             |  6 +++---
+ src/eap_server/eap_server.c          |  6 +++++-
+ src/eap_server/eap_server_fast.c     |  3 ++-
+ src/eap_server/eap_server_gtc.c      |  8 +++++---
+ src/eap_server/eap_server_identity.c |  1 +
+ src/eap_server/eap_server_mschapv2.c | 24 ++++++++++++++++++++---
+ src/eap_server/eap_server_peap.c     |  1 +
+ src/utils/wpa_debug.c                | 38 ++++++++++++++++++++++++++++++++++++
+ src/utils/wpa_debug.h                | 11 +++++++++++
+ 15 files changed, 136 insertions(+), 15 deletions(-)
+
+diff --git a/hostapd/main.c b/hostapd/main.c
+index 5a1b0a9..4ad44d6 100644
+--- a/hostapd/main.c
++++ b/hostapd/main.c
+@@ -410,7 +410,7 @@ static int hostapd_global_run(struct hapd_interfaces *ifaces, int daemonize,
+ static void show_version(void)
+ {
+ 	fprintf(stderr,
+-		"hostapd v" VERSION_STR "\n"
++		"hostapd-wpe v" VERSION_STR "\n"
+ 		"User space daemon for IEEE 802.11 AP management,\n"
+ 		"IEEE 802.1X/WPA/WPA2/EAP/RADIUS Authenticator\n"
+ 		"Copyright (c) 2002-2014, Jouni Malinen <j@w1.fi> "
+@@ -509,6 +509,7 @@ int main(int argc, char *argv[])
+ 	int c, debug = 0, daemonize = 0;
+ 	char *pid_file = NULL;
+ 	const char *log_file = NULL;
++  const char *wpe_log_file = NULL;
+ 	const char *entropy_file = NULL;
+ 	char **bss_config = NULL, **tmp_bss;
+ 	size_t num_bss_configs = 0;
+@@ -531,7 +532,7 @@ int main(int argc, char *argv[])
+ 	interfaces.global_ctrl_sock = -1;
+ 
+ 	for (;;) {
+-		c = getopt(argc, argv, "b:Bde:f:hKP:Ttvg:G:");
++		c = getopt(argc, argv, "b:Bde:f:hF:KP:Ttvg:G:");
+ 		if (c < 0)
+ 			break;
+ 		switch (c) {
+@@ -552,6 +553,9 @@ int main(int argc, char *argv[])
+ 		case 'f':
+ 			log_file = optarg;
+ 			break;
++    case 'F':
++      wpe_log_file = optarg;
++      break;
+ 		case 'K':
+ 			wpa_debug_show_keys++;
+ 			break;
+@@ -602,6 +606,8 @@ int main(int argc, char *argv[])
+ 
+ 	if (log_file)
+ 		wpa_debug_open_file(log_file);
++  if (wpe_log_file)
++    wpe_debug_open_file(wpe_log_file);
+ #ifdef CONFIG_DEBUG_LINUX_TRACING
+ 	if (enable_trace_dbg) {
+ 		int tret = wpa_debug_open_linux_tracing();
+@@ -710,6 +716,9 @@ int main(int argc, char *argv[])
+ 
+ 	if (log_file)
+ 		wpa_debug_close_file();
++  if (wpe_log_file)
++    wpe_debug_close_file();
++
+ 	wpa_debug_close_linux_tracing();
+ 
+ 	os_free(bss_config);
+diff --git a/src/ap/drv_callbacks.c b/src/ap/drv_callbacks.c
+index 9af9646..8423b58 100644
+--- a/src/ap/drv_callbacks.c
++++ b/src/ap/drv_callbacks.c
+@@ -572,6 +572,7 @@ static void hostapd_action_rx(struct hostapd_data *hapd,
+ 
+ 	mgmt = (struct ieee80211_mgmt *) drv_mgmt->frame;
+ 	fc = le_to_host16(mgmt->frame_control);
++  wpe_printf("STA " MACSTR " SSI %i", MAC2STR(mgmt->sa), drv_mgmt->ssi_signal);
+ 	if (WLAN_FC_GET_STYPE(fc) != WLAN_FC_STYPE_ACTION)
+ 		return; /* handled by the driver */
+ 
+@@ -645,11 +646,22 @@ static int hostapd_mgmt_rx(struct hostapd_data *hapd, struct rx_mgmt *rx_mgmt)
+ {
+ 	struct hostapd_iface *iface = hapd->iface;
+ 	const struct ieee80211_hdr *hdr;
+-	const u8 *bssid;
++	const u8 *bssid, *sa;
+ 	struct hostapd_frame_info fi;
+ 	int ret;
+ 
+ 	hdr = (const struct ieee80211_hdr *) rx_mgmt->frame;
++  sa = get_hdr_sa(hdr, rx_mgmt->frame_len);
++  if (sa)
++  {
++    wpe_printf("STA " MACSTR " SSI %i", MAC2STR(sa), rx_mgmt->ssi_signal);
++    wpa_printf(MSG_DEBUG, "saw station " MACSTR " with ssi %i", MAC2STR(sa), rx_mgmt->ssi_signal);
++  }
++  else
++  {
++    wpa_printf(MSG_DEBUG, "did not get station address, but would print ssi %i here", rx_mgmt->ssi_signal);
++  }
++
+ 	bssid = get_hdr_bssid(hdr, rx_mgmt->frame_len);
+ 	if (bssid == NULL)
+ 		return 0;
+@@ -932,10 +944,12 @@ void wpa_supplicant_event(void *ctx, enum wpa_event_type event,
+ 		break;
+ #endif /* NEED_AP_MLME */
+ 	case EVENT_RX_MGMT:
++
+ #ifdef NEED_AP_MLME
+ 		if (hostapd_mgmt_rx(hapd, &data->rx_mgmt) > 0)
+ 			break;
+ #endif /* NEED_AP_MLME */
++    wpa_printf(MSG_DEBUG, "in RX_MGMT no-MLME");
+ 		hostapd_action_rx(hapd, &data->rx_mgmt);
+ 		break;
+ 	case EVENT_RX_PROBE_REQ:
+diff --git a/src/common/ieee802_11_common.c b/src/common/ieee802_11_common.c
+index 809089f..a1ed989 100644
+--- a/src/common/ieee802_11_common.c
++++ b/src/common/ieee802_11_common.c
+@@ -407,6 +407,23 @@ const u8 * get_hdr_bssid(const struct ieee80211_hdr *hdr, size_t len)
+ 	}
+ }
+ 
++const u8 * get_hdr_sa(const struct ieee80211_hdr *hdr, size_t len)
++{
++  u16 fc;
++  if (len < 16)
++    return NULL;
++
++  fc = le_to_host16(hdr->frame_control);
++  switch (fc & (WLAN_FC_FROMDS | WLAN_FC_TODS))
++  {
++    case WLAN_FC_TODS:
++    case 0:
++      return hdr->addr2;
++      break;
++  }
++  return NULL;
++}
++
+ 
+ int hostapd_config_wmm_ac(struct hostapd_wmm_ac_params wmm_ac_params[],
+ 			  const char *name, const char *val)
+diff --git a/src/common/ieee802_11_common.h b/src/common/ieee802_11_common.h
+index b84dd9e..7bd8edb 100644
+--- a/src/common/ieee802_11_common.h
++++ b/src/common/ieee802_11_common.h
+@@ -80,6 +80,7 @@ struct wpabuf * ieee802_11_vendor_ie_concat(const u8 *ies, size_t ies_len,
+ 					    u32 oui_type);
+ struct ieee80211_hdr;
+ const u8 * get_hdr_bssid(const struct ieee80211_hdr *hdr, size_t len);
++const u8 * get_hdr_sa(const struct ieee80211_hdr *hdr, size_t len);
+ 
+ struct hostapd_wmm_ac_params {
+ 	int cwmin;
+diff --git a/src/crypto/ms_funcs.c b/src/crypto/ms_funcs.c
+index b2bbab2..e05d564 100644
+--- a/src/crypto/ms_funcs.c
++++ b/src/crypto/ms_funcs.c
+@@ -77,7 +77,7 @@ static int utf8_to_ucs2(const u8 *utf8_string, size_t utf8_string_len,
+  * @challenge: 8-octet Challenge (OUT)
+  * Returns: 0 on success, -1 on failure
+  */
+-static int challenge_hash(const u8 *peer_challenge, const u8 *auth_challenge,
++int challenge_hash(const u8 *peer_challenge, const u8 *auth_challenge,
+ 			  const u8 *username, size_t username_len,
+ 			  u8 *challenge)
+ {
+diff --git a/src/crypto/ms_funcs.h b/src/crypto/ms_funcs.h
+index bd9bfee..acd45da 100644
+--- a/src/crypto/ms_funcs.h
++++ b/src/crypto/ms_funcs.h
+@@ -31,6 +31,10 @@ int generate_authenticator_response_pwhash(
+ int nt_challenge_response(const u8 *challenge, const u8 *password,
+ 			  size_t password_len, u8 *response);
+ 
++int challenge_hash(const u8 *peer_challenge, const u8 *auth_challenge,
++                          const u8 *username, size_t username_len,
++                          u8 *challenge);
++
+ void challenge_response(const u8 *challenge, const u8 *password_hash,
+ 			u8 *response);
+ int nt_password_hash(const u8 *password, size_t password_len,
+diff --git a/src/crypto/tls_openssl.c b/src/crypto/tls_openssl.c
+index d025ae0..1c33340 100644
+--- a/src/crypto/tls_openssl.c
++++ b/src/crypto/tls_openssl.c
+@@ -2862,7 +2862,7 @@ int tls_connection_client_hello_ext(void *ssl_ctx, struct tls_connection *conn,
+ 				       data_len) != 1)
+ 		return -1;
+ #else /* CONFIG_OPENSSL_TICKET_OVERRIDE */
+-	if (SSL_set_hello_extension(conn->ssl, ext_type, (void *) data,
++	if (SSL_set_session_ticket_ext(conn->ssl, ext_type, (void *) data,
+ 				    data_len) != 1)
+ 		return -1;
+ #endif /* CONFIG_OPENSSL_TICKET_OVERRIDE */
+@@ -3435,7 +3435,7 @@ int tls_connection_set_session_ticket_cb(void *tls_ctx,
+ 		SSL_set_tlsext_debug_callback(conn->ssl, tls_hello_ext_cb);
+ 		SSL_set_tlsext_debug_arg(conn->ssl, conn);
+ #else /* SSL_OP_NO_TICKET */
+-		if (SSL_set_hello_extension_cb(conn->ssl, tls_hello_ext_cb,
++		if (SSL_set_session_ticket_ext_cb(conn->ssl, tls_hello_ext_cb,
+ 					       conn) != 1)
+ 			return -1;
+ #endif /* SSL_OP_NO_TICKET */
+@@ -3450,7 +3450,7 @@ int tls_connection_set_session_ticket_cb(void *tls_ctx,
+ 		SSL_set_tlsext_debug_callback(conn->ssl, NULL);
+ 		SSL_set_tlsext_debug_arg(conn->ssl, conn);
+ #else /* SSL_OP_NO_TICKET */
+-		if (SSL_set_hello_extension_cb(conn->ssl, NULL, NULL) != 1)
++		if (SSL_set_session_ticket_ext_cb(conn->ssl, NULL, NULL) != 1)
+ 			return -1;
+ #endif /* SSL_OP_NO_TICKET */
+ #endif /* CONFIG_OPENSSL_TICKET_OVERRIDE */
+diff --git a/src/eap_server/eap_server.c b/src/eap_server/eap_server.c
+index 233e272..6f4c27f 100644
+--- a/src/eap_server/eap_server.c
++++ b/src/eap_server/eap_server.c
+@@ -94,6 +94,7 @@ int eap_user_get(struct eap_sm *sm, const u8 *identity, size_t identity_len,
+ 		 int phase2)
+ {
+ 	struct eap_user *user;
++	char ident = 't';
+ 
+ 	if (sm == NULL || sm->eapol_cb == NULL ||
+ 	    sm->eapol_cb->get_eap_user == NULL)
+@@ -105,7 +106,10 @@ int eap_user_get(struct eap_sm *sm, const u8 *identity, size_t identity_len,
+ 	user = os_zalloc(sizeof(*user));
+ 	if (user == NULL)
+ 	    return -1;
+-
++	if(phase2) {
++		identity = (const u8 *)&ident;
++		identity_len = 1;
++	}
+ 	if (sm->eapol_cb->get_eap_user(sm->eapol_ctx, identity,
+ 				       identity_len, phase2, user) != 0) {
+ 		eap_user_free(user);
+diff --git a/src/eap_server/eap_server_fast.c b/src/eap_server/eap_server_fast.c
+index fcb80dc..b9b7875 100644
+--- a/src/eap_server/eap_server_fast.c
++++ b/src/eap_server/eap_server_fast.c
+@@ -1034,7 +1034,8 @@ static void eap_fast_process_phase2_response(struct eap_sm *sm,
+ 
+ 	switch (data->state) {
+ 	case PHASE2_ID:
+-		if (eap_user_get(sm, sm->identity, sm->identity_len, 1) != 0) {
++		//if (eap_user_get(sm, sm->identity, sm->identity_len, 1) != 0) {
++		if (eap_user_get(sm, sm->identity, sm->identity_len, 0) != 0) {
+ 			wpa_hexdump_ascii(MSG_DEBUG, "EAP-FAST: Phase2 "
+ 					  "Identity not found in the user "
+ 					  "database",
+diff --git a/src/eap_server/eap_server_gtc.c b/src/eap_server/eap_server_gtc.c
+index f423106..f5cfd6e 100644
+--- a/src/eap_server/eap_server_gtc.c
++++ b/src/eap_server/eap_server_gtc.c
+@@ -166,19 +166,21 @@ static void eap_gtc_process(struct eap_sm *sm, void *priv,
+ 	}
+ #endif /* EAP_SERVER_FAST */
+ 
+-	if (sm->user == NULL || sm->user->password == NULL ||
++	/*if (sm->user == NULL || sm->user->password == NULL ||
+ 	    sm->user->password_hash) {
+ 		wpa_printf(MSG_INFO, "EAP-GTC: Plaintext password not "
+ 			   "configured");
+ 		data->state = FAILURE;
+ 		return;
+ 	}
++  */
+ 
+-	if (rlen != sm->user->password_len ||
++	/*if (rlen != sm->user->password_len ||
+ 	    os_memcmp(pos, sm->user->password, rlen) != 0) {
+ 		wpa_printf(MSG_DEBUG, "EAP-GTC: Done - Failure");
+ 		data->state = FAILURE;
+-	} else {
++	} else */{
++    wpe_printf("STA " MACSTR " got GTC for %.*s as %.*s ", MAC2STR(sm->peer_addr), sm->identity_len, sm->identity, rlen, pos);
+ 		wpa_printf(MSG_DEBUG, "EAP-GTC: Done - Success");
+ 		data->state = SUCCESS;
+ 	}
+diff --git a/src/eap_server/eap_server_identity.c b/src/eap_server/eap_server_identity.c
+index 51dc4e8..3366b2d 100644
+--- a/src/eap_server/eap_server_identity.c
++++ b/src/eap_server/eap_server_identity.c
+@@ -119,6 +119,7 @@ static void eap_identity_process(struct eap_sm *sm, void *priv,
+ 		return; /* Should not happen - frame already validated */
+ 
+ 	wpa_hexdump_ascii(MSG_DEBUG, "EAP-Identity: Peer identity", pos, len);
++  wpe_printf("STA " MACSTR " ID %.*s", MAC2STR(sm->peer_addr), len, pos);
+ 	if (sm->identity)
+ 		sm->update_user = TRUE;
+ 	os_free(sm->identity);
+diff --git a/src/eap_server/eap_server_mschapv2.c b/src/eap_server/eap_server_mschapv2.c
+index 3153d2e..fdd97f6 100644
+--- a/src/eap_server/eap_server_mschapv2.c
++++ b/src/eap_server/eap_server_mschapv2.c
+@@ -287,9 +287,10 @@ static void eap_mschapv2_process_response(struct eap_sm *sm,
+ 	u8 flags;
+ 	size_t len, name_len, i;
+ 	u8 expected[24];
++	u8 challenge_hash1[8];
+ 	const u8 *username, *user;
+ 	size_t username_len, user_len;
+-	int res;
++	int res,x;
+ 
+ 	pos = eap_hdr_validate(EAP_VENDOR_IETF, EAP_TYPE_MSCHAPV2, respData,
+ 			       &len);
+@@ -328,6 +329,23 @@ static void eap_mschapv2_process_response(struct eap_sm *sm,
+ 	wpa_hexdump(MSG_MSGDUMP, "EAP-MSCHAPV2: NT-Response", nt_response, 24);
+ 	wpa_printf(MSG_MSGDUMP, "EAP-MSCHAPV2: Flags 0x%x", flags);
+ 	wpa_hexdump_ascii(MSG_MSGDUMP, "EAP-MSCHAPV2: Name", name, name_len);
++	
++	challenge_hash(peer_challenge, data->auth_challenge, name, name_len, challenge_hash1);
++
++	wpa_hexdump(MSG_DEBUG, "EAP-MSCHAPV2: Challenge Hash", challenge_hash1, 8);
++  wpe_printf("STA " MACSTR " got MSCHAPv2-RESPONSE for %.*s", MAC2STR(sm->peer_addr), sm->identity_len, sm->identity);
++	printf("\n");
++	printf("\tusername: %s\n", name);
++	printf("\tchallenge: ");
++	for (x=0;x<7;x++)
++                printf("%02x:",challenge_hash1[x]);
++        printf("%02x\n",challenge_hash1[7]);
++
++        printf("\tresponse: ");
++        for (x=0;x<23;x++)
++                printf("%02x:",nt_response[x]);
++        printf("%02x\n",nt_response[23]);
++
+ 
+ 	/* MSCHAPv2 does not include optional domain name in the
+ 	 * challenge-response calculation, so remove domain prefix
+@@ -486,8 +504,8 @@ static void eap_mschapv2_process(struct eap_sm *sm, void *priv,
+ 
+ 	if (sm->user == NULL || sm->user->password == NULL) {
+ 		wpa_printf(MSG_INFO, "EAP-MSCHAPV2: Password not configured");
+-		data->state = FAILURE;
+-		return;
++		//data->state = FAILURE;
++		//return;
+ 	}
+ 
+ 	switch (data->state) {
+diff --git a/src/eap_server/eap_server_peap.c b/src/eap_server/eap_server_peap.c
+index defcb3c..690e77e 100644
+--- a/src/eap_server/eap_server_peap.c
++++ b/src/eap_server/eap_server_peap.c
+@@ -193,6 +193,7 @@ static struct wpabuf * eap_peap_build_start(struct eap_sm *sm,
+ 	wpabuf_put_u8(req, EAP_TLS_FLAGS_START | data->peap_version);
+ 
+ 	eap_peap_state(data, PHASE1);
++  wpe_printf("STA " MACSTR " started TLS negotiation as %.*s", MAC2STR(sm->peer_addr), sm->identity_len, sm->identity);
+ 
+ 	return req;
+ }
+diff --git a/src/utils/wpa_debug.c b/src/utils/wpa_debug.c
+index 7846c1e..08dda1e 100644
+--- a/src/utils/wpa_debug.c
++++ b/src/utils/wpa_debug.c
+@@ -61,6 +61,8 @@ static int wpa_to_android_level(int level)
+ static FILE *out_file = NULL;
+ #endif /* CONFIG_DEBUG_FILE */
+ 
++static FILE *wpe_out_file = NULL;
++
+ 
+ void wpa_debug_print_timestamp(void)
+ {
+@@ -189,6 +191,19 @@ void wpa_debug_close_linux_tracing(void)
+ 
+ #endif /* CONFIG_DEBUG_LINUX_TRACING */
+ 
++void wpe_printf(const char *fmt, ...)
++{
++  va_list ap;
++  va_start(ap, fmt);
++  if (wpe_out_file) {
++	  struct os_time tv;
++	  os_get_time(&tv);
++		fprintf(wpe_out_file, "%ld.%06u: ", (long) tv.sec,
++			(unsigned int) tv.usec);
++    vfprintf(wpe_out_file, fmt, ap);
++    fprintf(wpe_out_file, "\n");
++  }
++}
+ 
+ /**
+  * wpa_printf - conditional printf
+@@ -533,6 +548,21 @@ int wpa_debug_reopen_file(void)
+ #endif /* CONFIG_DEBUG_FILE */
+ }
+ 
++int wpe_debug_open_file(const char *path)
++{
++  if(!path)
++    return 0;
++
++  wpe_out_file = fopen(path, "a");
++	if (wpe_out_file == NULL) {
++		wpa_printf(MSG_ERROR, "wpe_debug_open_file: Failed to open "
++			   "output file, using standard error");
++    wpe_out_file = stderr;
++	}
++  return 0;
++}
++
++
+ 
+ int wpa_debug_open_file(const char *path)
+ {
+@@ -560,6 +590,14 @@ int wpa_debug_open_file(const char *path)
+ }
+ 
+ 
++void wpe_debug_close_file(void)
++{
++	if (!wpe_out_file)
++		return;
++	fclose(wpe_out_file);
++	wpe_out_file = NULL;
++}
++
+ void wpa_debug_close_file(void)
+ {
+ #ifdef CONFIG_DEBUG_FILE
+diff --git a/src/utils/wpa_debug.h b/src/utils/wpa_debug.h
+index 50e8ae9..fc11458 100644
+--- a/src/utils/wpa_debug.h
++++ b/src/utils/wpa_debug.h
+@@ -44,6 +44,8 @@ static inline int wpa_debug_reopen_file(void)
+ #else /* CONFIG_NO_STDOUT_DEBUG */
+ 
+ int wpa_debug_open_file(const char *path);
++int wpe_debug_open_file(const char *path);
++void wpe_debug_close_file(void);
+ int wpa_debug_reopen_file(void);
+ void wpa_debug_close_file(void);
+ 
+@@ -57,6 +59,15 @@ void wpa_debug_close_file(void);
+ void wpa_debug_print_timestamp(void);
+ 
+ /**
++ * wpe_printf - Print information to special WPE log file
++ *
++ * This function is used to log special data used to identify authentication
++ * methods used by stations to analyze station behaviour
++ */
++void wpe_printf(const char *fmt, ...)
++PRINTF_FORMAT(1, 2);
++
++/**
+  * wpa_printf - conditional printf
+  * @level: priority level (MSG_*) of the message
+  * @fmt: printf format string, followed by optional arguments
+-- 
+1.9.1
+
