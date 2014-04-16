@@ -1,0 +1,34 @@
+This project allows hostapd to be used for WPA-Enterprise MITM attacks by spoofing a target network access point.
+
+It adds logging for MSCHAPv2 challenge/response hashes and GTC plaintext passwords.
+
+Beware: The use of these patches may be obliged by your local law. Only operate this on your own network!
+
+Changes:
+- Configuration parameter "-F <wpe log>" outputs all relevant information to supplied wpe log file.
+  These include the mentioned authentication information, usernames, some TLS state machine information to analyse user settings for certificate checks and additionally RSSI information (if your wireless card reports them in MLME data) to use for filtering or additional analysis eg. for incomplete authentications (due to bad wireless conditions)
+
+Patches should apply to as of now latest HOSTAPD git version. It is also easy to apply the main changes to android versions of HOSTAPD as delivered for example with Cyanogenmod.
+
+The startscript helps you to setup a complete environment: run
+start.sh <interface> <SSID> <WPE log>
+
+The android startscript start_android.sh will automatically use the configured PERSIST_FOLDER with current date/time as WPE log file if none is given.
+
+with target interface/ssid/wpe log file output.
+
+It will copy the template certificates to an in script defined temporary folder, generate a new set of certificates, changes your wireless mac by calling macchanger and runs hostapd with the template config.
+
+The same startup file is available for the minimalist android environment.
+
+On android, you also need the macchanger utility.
+
+
+Configuration:
+Both shellscripts allow a little bit of configuration.
+MAC_FILE is the name of the faked mac assigned to the wlan interface. It may be used together with wlan monitor utilities to exclude your own rogue ap. Additionally, I had the idea of a deauthenticator that deauthenticates all stations from all APs except your own one. That may use this macfile.
+
+
+TMP_FOLDER is the storage of all temporary data like certificates (generated on each start) and the MAC_FILE
+PERSIST_FOLDER points to the folder where WPE log files are stored on android.
+HOSTAPD_BIN points to the hostapd binary to run. 
