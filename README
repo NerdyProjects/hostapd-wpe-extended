@@ -1,5 +1,9 @@
 This project allows hostapd to be used for WPA-Enterprise MITM attacks by spoofing a target network access point.
 
+It is based on the OpenSecurityResearch hostapd-wpe (https://github.com/OpenSecurityResearch/hostapd-wpe) but enhanced with a little better output and useful scripts for easy usage.
+
+I described the problems which can be demonstrated with this "exploit" in a paper which is unfortunately not in a publishable state. After finishing it, I found this blog post http://h4des.org/blog/index.php?/archives/341-eduroam-WiFi-security-audit-or-why-it-is-broken-by-design.html which mainly says the same. It is definitively a good read!
+
 It adds logging for MSCHAPv2 challenge/response hashes and GTC plaintext passwords.
 
 Beware: The use of these patches may be obliged by your local law. Only operate this on your own network!
