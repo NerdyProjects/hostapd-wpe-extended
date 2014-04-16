@@ -1,0 +1,92 @@
+From a6f6f14536d6045f6e66a42a83c984d741edf2e0 Mon Sep 17 00:00:00 2001
+From: Matthias Larisch <mail@matthias-larisch.de>
+Date: Wed, 16 Apr 2014 20:13:15 +0200
+Subject: [PATCH] Add android makefiles and option to exclude data files
+
+Create android makefiles to support building on android. Does expicitly
+exclude maclist files as the author was too lazy to figure out how to
+correctly supply data files for android package.
+
+Change-Id: I4f807f78a320d28da307eb8b62827b61c554da20
+---
+ Android.mk      |  1 +
+ data/Android.mk | 17 +++++++++++++++++
+ src/Android.mk  | 16 ++++++++++++++++
+ src/main.c      |  2 ++
+ 4 files changed, 36 insertions(+)
+ create mode 100644 Android.mk
+ create mode 100644 data/Android.mk
+ create mode 100644 src/Android.mk
+
+diff --git a/Android.mk b/Android.mk
+new file mode 100644
+index 0000000..5053e7d
+--- /dev/null
++++ b/Android.mk
+@@ -0,0 +1 @@
++include $(call all-subdir-makefiles)
+diff --git a/data/Android.mk b/data/Android.mk
+new file mode 100644
+index 0000000..85bf24d
+--- /dev/null
++++ b/data/Android.mk
+@@ -0,0 +1,17 @@
++LOCAL_PATH := $(call my-dir)
++
++include $(CLEAR_VARS)
++LOCAL_MODULE := wireless.list
++LOCAL_MODULE_PATH := $(TARGET_OUT)/usr/share/macchanger
++LOCAL_MODULE_TAGS := optional
++LOCAL_MODULE_CLASS := ETC
++LOCAL_SRC_FILES := $(LOCAL_MODULE)
++include $(BUILD_PREBUILT)
++
++include $(CLEAR_VARS)
++LOCAL_MODULE := OUI.list
++LOCAL_MODULE_PATH := $(TARGET_OUT)/usr/share/macchanger
++LOCAL_MODULE_TAGS := optional
++LOCAL_MODULE_CLASS := ETC
++LOCAL_SRC_FILES := $(LOCAL_MODULE)
++include $(BUILD_PREBUILT)
+diff --git a/src/Android.mk b/src/Android.mk
+new file mode 100644
+index 0000000..c47ec51
+--- /dev/null
++++ b/src/Android.mk
+@@ -0,0 +1,16 @@
++LOCAL_PATH := $(call my-dir)
++
++include $(CLEAR_VARS)
++
++LOCAL_SRC_FILES := \
++	mac.c \
++	maclist.c \
++	netinfo.c \
++	main.c
++
++LOCAL_CFLAGS := -DLISTDIR="\"/system/usr/share/macchanger\"" -DVERSION="\"1.7.0\""
++LOCAL_MODULE := macchanger
++LOCAL_MODULE_PATH := $(TARGET_OUT_OPTIONAL_EXECUTABLES)
++LOCAL_MODULE_TAGS := eng
++
++include $(BUILD_EXECUTABLE)
+diff --git a/src/main.c b/src/main.c
+index 711ffe7..5d7cd4e 100644
+--- a/src/main.c
++++ b/src/main.c
+@@ -197,10 +197,12 @@ main (int argc, char *argv[])
+ 		}
+ 	}
+ 
++#ifndef EXCLUDE_MACLIST
+ 	/* Read the MAC lists */
+ 	if (mc_maclist_init() < 0) {
+ 		exit (EXIT_ERROR);
+ 	}
++#endif
+ 
+ 	/* Print list? */
+ 	if (print_list) {
+-- 
+1.9.2
+
