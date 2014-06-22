@@ -2,7 +2,8 @@ This project allows hostapd to be used for WPA-Enterprise MITM attacks by spoofi
 
 It is based on the OpenSecurityResearch hostapd-wpe (https://github.com/OpenSecurityResearch/hostapd-wpe) but enhanced with a little better output and useful scripts for easy usage.
 
-I described the problems which can be demonstrated with this "exploit" in a paper which is unfortunately not in a publishable state. After finishing it, I found this blog post http://h4des.org/blog/index.php?/archives/341-eduroam-WiFi-security-audit-or-why-it-is-broken-by-design.html which mainly says the same. It is definitively a good read!
+I described the problems which can be demonstrated with this "exploit" in a paper you may in the doc folder.
+After finishing it, I found this blog post http://h4des.org/blog/index.php?/archives/341-eduroam-WiFi-security-audit-or-why-it-is-broken-by-design.html which mainly says the same. It is definitively a good read!
 
 It adds logging for MSCHAPv2 challenge/response hashes and GTC plaintext passwords.
 
@@ -36,3 +37,6 @@ MAC_FILE is the name of the faked mac assigned to the wlan interface. It may be 
 TMP_FOLDER is the storage of all temporary data like certificates (generated on each start) and the MAC_FILE
 PERSIST_FOLDER points to the folder where WPE log files are stored on android.
 HOSTAPD_BIN points to the hostapd binary to run. 
+
+There is another patch for aircrack-ng:
+You may use airodump to deauthenticate clients from access points with given SSID. You may also specify a BSSID where clients would not get deauthenticated. Another filter is for the signal strength: Only disconnect clients which are near to you (so they will connect to your rogue access point)
