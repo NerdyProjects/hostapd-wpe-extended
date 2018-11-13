@@ -8,7 +8,7 @@ MAC_FILE=fakeapmac
 TMP_FOLDER=/tmp/hostapd-wpe
 KEY_PATH=$TMP_FOLDER/certs
 CONFIG_TEMPLATE=hostapd_eap.tpl
-HOSTAPD_BIN=../hostap/hostapd/hostapd
+HOSTAPD_BIN=../hostapd-2.5/hostapd/hostapd
 
 if [ -z "$1" ]; then
   ERROR="Error: missing interface name! "

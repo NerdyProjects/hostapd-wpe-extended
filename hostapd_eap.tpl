@@ -405,7 +405,7 @@ ieee80211n=1
 # DSSS/CCK Mode in 40 MHz: [DSSS_CCK-40] = allowed (not allowed if not set)
 # PSMP support: [PSMP] (disabled if not set)
 # L-SIG TXOP protection support: [LSIG-TXOP-PROT] (disabled if not set)
-ht_capab=[SHORT-GI-20][DELAYED-BA]
+ht_capab=[SHORT-GI-20]
 
 # Require stations to support HT PHY (reject association if they do not)
 #require_ht=1
@@ -470,7 +470,7 @@ eap_server=1
 eap_user_file=$KEY_PATH/hostapd.eap_user
 
 # CA certificate (PEM or DER file) for EAP-TLS/PEAP/TTLS
-ca_cert=$KEY_PATH/chain_ca.pem
+ca_cert=$KEY_PATH/ca.pem
 
 # Server certificate (PEM or DER file) for EAP-TLS/PEAP/TTLS
 server_cert=$KEY_PATH/server.pem
